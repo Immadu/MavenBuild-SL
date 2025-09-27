@@ -21,31 +21,31 @@ jobs:
       - name: Build the code
         run: mvn -B -ntp clean package
 
-      - name: SSH to lab machine and trigger Jenkins job
-        uses: cross-the-world/ssh-scp-ssh-pipelines@latest
-        with:
-          host: ${{ secrets.LAB_HOST }}          # e.g. 15.206.1.117
-          user: ${{ secrets.LAB_USER }}          # e.g. labuser
-          pass: ${{ secrets.LAB_PASS }}          # SSH password (or use key-based auth)
-          port: 22
-          connect_timeout: 10s
-          first_ssh: |
-            # --- Jenkins trigger with CSRF crumb ---
-            export JENKINS_URL='http://localhost:8080'
-            export JOB='jenkins-tomcat-deployment-pipeline'
-            export USER='${{ secrets.JENKINS_USER }}'          # Jenkins username
-            export TOKEN='${{ secrets.JENKINS_API_TOKEN }}'    # Jenkins API token (prefer over password)
-            export REMOTE_TOKEN='${{ secrets.JENKINS_REMOTE_TOKEN }}'  # "Trigger builds remotely" token
-
-            # Fetch crumb (HeaderName:crumbValue). If 404, CSRF likely disabled.
-            CRUMB=$(curl -s -u "$USER:$TOKEN" \
-              "$JENKINS_URL/crumbIssuer/api/xml?xpath=concat(//crumbRequestField,\":\",//crumb)" \
-              || true)
-
-            # POST build with parameters (follow redirects, fail on HTTP errors)
-            curl -sS -f -L -X POST \
-              -u "$USER:$TOKEN" \
-              ${CRUMB:+-H "$CRUMB"} \
-              "$JENKINS_URL/job/$JOB/buildWithParameters" \
-              --data-urlencode token="$REMOTE_TOKEN" \
-              --data-urlencode param1="value"
+      - name: SSH to lab host and trigger Jenkins (no Docker action)
+        env:
+          LAB_HOST: ${{ secrets.LAB_HOST }}            # e.g. 15.206.1.117
+          LAB_USER: ${{ secrets.LAB_USER }}            # e.g. labuser
+          LAB_PASS: ${{ secrets.LAB_PASS }}            # SSH password (or switch to key auth)
+          JENKINS_URL: http://localhost:8080
+          JOB: jenkins-tomcat-deployment-pipeline
+          JENKINS_USER: ${{ secrets.JENKINS_USER }}          # Jenkins username
+          JENKINS_API_TOKEN: ${{ secrets.JENKINS_API_TOKEN }}# Jenkins API token
+          REMOTE_TOKEN: ${{ secrets.JENKINS_REMOTE_TOKEN }}  # "Trigger builds remotely" token
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+          sshpass -p "$LAB_PASS" ssh -o StrictHostKeyChecking=no "$LAB_USER@$LAB_HOST" \
+            "JENKINS_URL='$JENKINS_URL' JOB='$JOB' USER='$JENKINS_USER' API='$JENKINS_API_TOKEN' REMOTE_TOKEN='$REMOTE_TOKEN' bash -s" <<'REMOTE'
+          set -euo pipefail
+          # Get CSRF crumb if enabled (HeaderName:crumb)
+          CRUMB=$(curl -s -u "$USER:$API" \
+            "$JENKINS_URL/crumbIssuer/api/xml?xpath=concat(//crumbRequestField,\":\",//crumb)" || true)
+          # Trigger build with parameters
+          curl -sS -f -L -X POST \
+            -u "$USER:$API" \
+            ${CRUMB:+-H "$CRUMB"} \
+            "$JENKINS_URL/job/$JOB/buildWithParameters" \
+            --data-urlencode token="$REMOTE_TOKEN" \
+            --data-urlencode param1="value"
+          echo "Triggered Jenkins job '$JOB' on $JENKINS_URL"
+          REMOTE
