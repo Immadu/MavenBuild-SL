@@ -1,28 +1,51 @@
-name: CICD using Maven and tomcat
+name: CICD using Maven and Tomcat
+
 on:
- push:  # run when there is commit to repo
- workflow_dispatch:  # run manually
+  push:
+  workflow_dispatch:
+
 jobs:
- CICDjob:
-   runs-on: ubuntu-latest
-   steps:
-    - name: Clone the repo on ubuntu server
-      uses: actions/checkout@v4
-    - name: Install Java and maven on ubuntu server
-      uses: actions/setup-java@v4
-      with:
-       distribution: 'temurin'
-       java-version: '11'
-       cache: 'maven'
-    - name: Build the code 
-      run: mvn package
-    - name: Connect to Lab machine and trigger a Jenkins job 
-      uses: cross-the-world/ssh-scp-ssh-pipelines@latest
-      with:
-        host: '15.206.1.117'
-        user: 'labuser'
-        pass: 'Nuvelabs123$'
-        port: 22
-        connect_timeout: 10s
-        first_ssh:
-           curl -l -u amadoudiallo:Sajor@8903 http://localhost:8080/job/jenkins-tomcat-deployment-pipeline/build?token=token1
+  CICDjob:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Java + Maven cache
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          cache: maven
+
+      - name: Build the code
+        run: mvn -B -ntp clean package
+
+      - name: SSH to lab machine and trigger Jenkins job
+        uses: cross-the-world/ssh-scp-ssh-pipelines@latest
+        with:
+          host: ${{ secrets.LAB_HOST }}          # e.g. 15.206.1.117
+          user: ${{ secrets.LAB_USER }}          # e.g. labuser
+          pass: ${{ secrets.LAB_PASS }}          # SSH password (or use key-based auth)
+          port: 22
+          connect_timeout: 10s
+          first_ssh: |
+            # --- Jenkins trigger with CSRF crumb ---
+            export JENKINS_URL='http://localhost:8080'
+            export JOB='jenkins-tomcat-deployment-pipeline'
+            export USER='${{ secrets.JENKINS_USER }}'          # Jenkins username
+            export TOKEN='${{ secrets.JENKINS_API_TOKEN }}'    # Jenkins API token (prefer over password)
+            export REMOTE_TOKEN='${{ secrets.JENKINS_REMOTE_TOKEN }}'  # "Trigger builds remotely" token
+
+            # Fetch crumb (HeaderName:crumbValue). If 404, CSRF likely disabled.
+            CRUMB=$(curl -s -u "$USER:$TOKEN" \
+              "$JENKINS_URL/crumbIssuer/api/xml?xpath=concat(//crumbRequestField,\":\",//crumb)" \
+              || true)
+
+            # POST build with parameters (follow redirects, fail on HTTP errors)
+            curl -sS -f -L -X POST \
+              -u "$USER:$TOKEN" \
+              ${CRUMB:+-H "$CRUMB"} \
+              "$JENKINS_URL/job/$JOB/buildWithParameters" \
+              --data-urlencode token="$REMOTE_TOKEN" \
+              --data-urlencode param1="value"
