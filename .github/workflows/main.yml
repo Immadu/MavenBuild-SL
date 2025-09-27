@@ -24,6 +24,5 @@ jobs:
         pass: 'Nuvelabs123$'
         port: 22
         connect_timeout: 10s
-        first_ssh: |
-          curl -l -u admin:Root123$ http://localhost:8080/job/Deployment-pipeline/build?token=token1
-
+        first_ssh:
+           curl -l -u amadoudiallo:Sajor@8903 http://localhost:8080/job/jenkins-tomcat-deployment-pipeline/build?token=token1
