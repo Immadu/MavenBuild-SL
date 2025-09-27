@@ -1,51 +1,62 @@
-name: CICD using Maven and Tomcat
+name: CICD using Maven and tomcat
 
 on:
-  push:
-  workflow_dispatch:
+  push:                # run when there is a commit to repo
+  workflow_dispatch:   # allow manual runs
 
 jobs:
   CICDjob:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java + Maven cache
+      - name: Set up Java and Maven
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          distribution: 'temurin'
           java-version: '11'
-          cache: maven
+          cache: 'maven'
 
       - name: Build the code
-        run: mvn -B -ntp clean package
+        run: mvn -B package
 
-      - name: SSH to lab host and trigger Jenkins (no Docker action)
+      # ---- Trigger Jenkins on the lab machine via SSH (no Docker needed) ----
+      - name: Trigger Jenkins deploy on lab host (with CSRF crumb)
         env:
-          LAB_HOST: ${{ secrets.LAB_HOST }}            # e.g. 15.206.1.117
-          LAB_USER: ${{ secrets.LAB_USER }}            # e.g. labuser
-          LAB_PASS: ${{ secrets.LAB_PASS }}            # SSH password (or switch to key auth)
-          JENKINS_URL: http://localhost:8080
-          JOB: jenkins-tomcat-deployment-pipeline
-          JENKINS_USER: ${{ secrets.JENKINS_USER }}          # Jenkins username
-          JENKINS_API_TOKEN: ${{ secrets.JENKINS_API_TOKEN }}# Jenkins API token
-          REMOTE_TOKEN: ${{ secrets.JENKINS_REMOTE_TOKEN }}  # "Trigger builds remotely" token
+          LAB_HOST: 15.206.1.117
+          LAB_USER: labuser
+          LAB_PASS: ${{ secrets.LAB_PASS }}                 # e.g. the lab user's password
+          JENKINS_URL: "http://localhost:8080"             # Jenkins runs on the lab host
+          JENKINS_USER: ${{ secrets.JENKINS_USER }}        # e.g. amadoudiallo
+          JENKINS_API_TOKEN: ${{ secrets.JENKINS_API_TOKEN }} # Jenkins API token (not UI password)
+          JOB_NAME: "jenkins-tomcat-deployment-pipeline"
+          JOB_REMOTE_TOKEN: ${{ secrets.JOB_REMOTE_TOKEN }} # token from "Trigger builds remotely"
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y sshpass
-          sshpass -p "$LAB_PASS" ssh -o StrictHostKeyChecking=no "$LAB_USER@$LAB_HOST" \
-            "JENKINS_URL='$JENKINS_URL' JOB='$JOB' USER='$JENKINS_USER' API='$JENKINS_API_TOKEN' REMOTE_TOKEN='$REMOTE_TOKEN' bash -s" <<'REMOTE'
-          set -euo pipefail
-          # Get CSRF crumb if enabled (HeaderName:crumb)
-          CRUMB=$(curl -s -u "$USER:$API" \
-            "$JENKINS_URL/crumbIssuer/api/xml?xpath=concat(//crumbRequestField,\":\",//crumb)" || true)
-          # Trigger build with parameters
-          curl -sS -f -L -X POST \
-            -u "$USER:$API" \
-            ${CRUMB:+-H "$CRUMB"} \
-            "$JENKINS_URL/job/$JOB/buildWithParameters" \
-            --data-urlencode token="$REMOTE_TOKEN" \
-            --data-urlencode param1="value"
-          echo "Triggered Jenkins job '$JOB' on $JENKINS_URL"
-          REMOTE
+
+          # Pass secrets into the remote shell via env and run the script there
+          sshpass -p "$LAB_PASS" ssh -o StrictHostKeyChecking=no -p 22 "$LAB_USER@$LAB_HOST" \
+            JENKINS_USER="$JENKINS_USER" \
+            JENKINS_API_TOKEN="$JENKINS_API_TOKEN" \
+            JENKINS_URL="$JENKINS_URL" \
+            JOB_NAME="$JOB_NAME" \
+            JOB_REMOTE_TOKEN="$JOB_REMOTE_TOKEN" \
+            'bash -s' <<'REMOTE'
+set -euo pipefail
+
+# Get CSRF crumb (returns header like: Jenkins-Crumb:xxxx)
+CRUMB=$(curl -s -u "$JENKINS_USER:$JENKINS_API_TOKEN" \
+  "$JENKINS_URL/crumbIssuer/api/xml?xpath=concat(//crumbRequestField,\":\",//crumb)")
+
+# Trigger parameterized job with the job's remote token and any params you need
+curl -sS -X POST -u "$JENKINS_USER:$JENKINS_API_TOKEN" -H "$CRUMB" \
+  "$JENKINS_URL/job/$JOB_NAME/buildWithParameters" \
+  --data-urlencode "token=$JOB_REMOTE_TOKEN" \
+  --data-urlencode "param1=value"
+
+echo "Triggered Jenkins job: $JOB_NAME"
+REMOTE
