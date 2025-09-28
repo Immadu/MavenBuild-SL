@@ -1,33 +1,81 @@
-name: CICD using Maven and tomcat
+name: CICD using Maven and Tomcat
+
 on:
   push:
   workflow_dispatch:
 
 jobs:
-  CICDjob:
-    runs-on: self-hosted
+  cicd:
+    runs-on: ubuntu-latest
+
+    env:
+      # Jenkins defaults (you can override via repo secrets if needed)
+      JENKINS_URL: ${{ secrets.JENKINS_URL || 'http://localhost:8080' }}
+      JENKINS_JOB: ${{ secrets.JENKINS_JOB || 'jenkins-tomcat-deployment-pipeline' }}
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - name: Checkout
+      # Pull your repo so Maven can build it on the GitHub runner
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 11
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '11'
           cache: maven
-      - name: Build the code
-        run: mvn -q -e package
-      - name: Trigger Jenkins locally (with crumb)
-        run: |
-          J_USER='jenkins_user'          # use a Jenkins API token, not a password
-          J_TOKEN='xxxxxx'
-          BASE='http://localhost:8080'
 
-          CRUMB=$(curl -s -u "$J_USER:$J_TOKEN" "$BASE/crumbIssuer/api/json" \
-                  | python3 - <<'PY'
+      - name: Build with Maven
+        run: mvn -B -q -e -DskipTests package
+
+      # SSH into your Kali (public IP) and hit Jenkins on that machine's localhost:8080
+      - name: Connect to Kali and trigger Jenkins
+        uses: cross-the-world/ssh-scp-ssh-pipelines@v1.1.5
+        with:
+          host: ${{ secrets.KALI_HOST }}       # e.g. 69.112.180.123
+          user: ${{ secrets.KALI_USER }}       # e.g. sadio
+          pass: ${{ secrets.KALI_PASS }}       # prefer SSH key if possible (see note below)
+          port: 22
+          connect_timeout: 15s
+          first_ssh: |
+            set -euo pipefail
+
+            echo "Checking Jenkins at ${JENKINS_URL} ..."
+            # Use API token, not password
+            AUTH="${JENKINS_USER}:${JENKINS_API_TOKEN}"
+            curl -sSf -u "$AUTH" "${JENKINS_URL}/api/json" >/dev/null
+
+            echo "Fetching CSRF crumb (if required)..."
+            CRUMB_HEADER="$(curl -s -u "$AUTH" "${JENKINS_URL}/crumbIssuer/api/json" \
+              | python3 - <<'PY'
 import sys, json
-d=json.load(sys.stdin)
-print(f"{d['crumbRequestField']}:{d['crumb']}")
+try:
+  d=json.load(sys.stdin)
+  fld=d.get("crumbRequestField"); val=d.get("crumb")
+  print(f"{fld}: {val}" if fld and val else "", end="")
+except Exception:
+  print("", end="")
 PY
-          )
+            )"
 
-          curl -sS -u "$J_USER:$J_TOKEN" -H "$CRUMB" -X POST \
-            "$BASE/job/jenkins-tomcat-deployment-pipeline/buildWithParameters?token=token1&param1=value"
+            echo "Triggering Jenkins job: ${JENKINS_JOB}"
+            # If your job is *non-parameterized*, use /build; otherwise /buildWithParameters
+            ENDPOINT="build"  # change to 'buildWithParameters' if you pass params
+
+            CURL_ARGS=(-sS -u "$AUTH" -X POST)
+            [[ -n "$CRUMB_HEADER" ]] && CURL_ARGS+=(-H "$CRUMB_HEADER")
+
+            # Example for parameterized jobs (uncomment and switch ENDPOINT to buildWithParameters)
+            # CURL_ARGS+=( --data-urlencode 'param1=value' )
+
+            curl "${CURL_ARGS[@]}" "${JENKINS_URL}/job/${JENKINS_JOB}/${ENDPOINT}"
+
+        env:
+          # Jenkins creds come from secrets
+          JENKINS_USER: ${{ secrets.JENKINS_USER }}
+          JENKINS_API_TOKEN: ${{ secrets.JENKINS_API_TOKEN }}
+          # (Optional) override defaults via secrets if Jenkins isn't on localhost:8080 or job name differs
+          JENKINS_URL: ${{ secrets.JENKINS_URL || env.JENKINS_URL }}
+          JENKINS_JOB: ${{ secrets.JENKINS_JOB || env.JENKINS_JOB }}
