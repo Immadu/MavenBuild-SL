@@ -1,81 +1,28 @@
-name: CICD using Maven and Tomcat
-
+name: CICD using Maven and tomcat
 on:
-  push:
-  workflow_dispatch:
-
+ push:  # run when there is commit to repo
+ workflow_dispatch:  # run manually
 jobs:
-  cicd:
-    runs-on: ubuntu-latest
-
-    env:
-      # Jenkins defaults (you can override via repo secrets if needed)
-      JENKINS_URL: ${{ secrets.JENKINS_URL || 'http://localhost:8080' }}
-      JENKINS_JOB: ${{ secrets.JENKINS_JOB || 'jenkins-tomcat-deployment-pipeline' }}
-
-    steps:
-      - name: Checkout
-      # Pull your repo so Maven can build it on the GitHub runner
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Java 11
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '11'
-          cache: maven
-
-      - name: Build with Maven
-        run: mvn -B -q -e -DskipTests package
-
-      # SSH into your Kali (public IP) and hit Jenkins on that machine's localhost:8080
-      - name: Connect to Kali and trigger Jenkins
-        uses: cross-the-world/ssh-scp-ssh-pipelines@v1.1.5
-        with:
-          host: ${{ secrets.KALI_HOST }}       # e.g. 69.112.180.123
-          user: ${{ secrets.KALI_USER }}       # e.g. sadio
-          pass: ${{ secrets.KALI_PASS }}       # prefer SSH key if possible (see note below)
-          port: 22
-          connect_timeout: 15s
-          first_ssh: |
-            set -euo pipefail
-
-            echo "Checking Jenkins at ${JENKINS_URL} ..."
-            # Use API token, not password
-            AUTH="${JENKINS_USER}:${JENKINS_API_TOKEN}"
-            curl -sSf -u "$AUTH" "${JENKINS_URL}/api/json" >/dev/null
-
-            echo "Fetching CSRF crumb (if required)..."
-            CRUMB_HEADER="$(curl -s -u "$AUTH" "${JENKINS_URL}/crumbIssuer/api/json" \
-              | python3 - <<'PY'
-import sys, json
-try:
-  d=json.load(sys.stdin)
-  fld=d.get("crumbRequestField"); val=d.get("crumb")
-  print(f"{fld}: {val}" if fld and val else "", end="")
-except Exception:
-  print("", end="")
-PY
-            )"
-
-            echo "Triggering Jenkins job: ${JENKINS_JOB}"
-            # If your job is *non-parameterized*, use /build; otherwise /buildWithParameters
-            ENDPOINT="build"  # change to 'buildWithParameters' if you pass params
-
-            CURL_ARGS=(-sS -u "$AUTH" -X POST)
-            [[ -n "$CRUMB_HEADER" ]] && CURL_ARGS+=(-H "$CRUMB_HEADER")
-
-            # Example for parameterized jobs (uncomment and switch ENDPOINT to buildWithParameters)
-            # CURL_ARGS+=( --data-urlencode 'param1=value' )
-
-            curl "${CURL_ARGS[@]}" "${JENKINS_URL}/job/${JENKINS_JOB}/${ENDPOINT}"
-
-        env:
-          # Jenkins creds come from secrets
-          JENKINS_USER: ${{ secrets.JENKINS_USER }}
-          JENKINS_API_TOKEN: ${{ secrets.JENKINS_API_TOKEN }}
-          # (Optional) override defaults via secrets if Jenkins isn't on localhost:8080 or job name differs
-          JENKINS_URL: ${{ secrets.JENKINS_URL || env.JENKINS_URL }}
-          JENKINS_JOB: ${{ secrets.JENKINS_JOB || env.JENKINS_JOB }}
+ CICDjob:
+   runs-on: ubuntu-latest
+   steps:
+    - name: Clone the repo on ubuntu server
+      uses: actions/checkout@v4
+    - name: Install Java and maven on ubuntu server
+      uses: actions/setup-java@v4
+      with:
+       distribution: 'temurin'
+       java-version: '11'
+       cache: 'maven'
+    - name: Build the code 
+      run: mvn package
+    - name: Connect to Lab machine and trigger a Jenkins job 
+      uses: cross-the-world/ssh-scp-ssh-pipelines@latest
+      with:
+        host: '69.112.180.123'
+        user: 'sadio'
+        pass: 'Sajor@8903'
+        port: 22
+        connect_timeout: 10s
+        first_ssh: |
+           curl -l -u sadio:Sajor@8903 http://localhost:8080/job/jenkins-tomcat-deployment-pipeline/build?token=token1
